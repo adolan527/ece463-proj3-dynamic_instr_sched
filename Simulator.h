@@ -16,113 +16,13 @@ struct ROBEntry {
     int dst;
     bool valid, ready,exec, miss;
     uint64_t pc;
-};
 
-
-
-template <typename T>
-class Buffer {
-    std::queue<T> m_data;
-public:
-
-    size_t m_element_count;
-    const size_t m_max_element_count;
-    Buffer(size_t max_element_count)
-        : m_max_element_count(max_element_count),
-        m_element_count(0) {};
-
-    Buffer& operator=(Buffer&& other) noexcept {
-        if (this != &other) {
-            if (m_max_element_count != other.m_max_element_count) {
-                printf("ERROR: Move-assign between Buffers of different max sizes\n");
-                return *this;
-            }
-            m_data = std::move(other.m_data);
-            m_element_count = other.m_element_count;
-            other.m_element_count = 0;
-        }
-        return *this;
+    void Print_Header(FILE *out = stdout) {
+        fprintf(out,"dst,valid,ready,exec,miss,pc\n");
     }
-
-    bool empty() {return m_data.empty();}
-    bool full() {return m_element_count == m_max_element_count;}
-    int available() {return m_max_element_count-m_element_count;}
-    void push(T entry) {
-        if (full()) {
-            printf("ERROR: Pushing to full buffer\n");
-            return;
-        }
-        m_element_count++;
-        m_data.push(entry);
+    void Print(FILE *out = stdout) {
+        fprintf(out,"%d, %d, %d, %d, %d, %x\n",dst,valid,ready,exec,miss,pc);
     }
-    T pop() {
-        if (empty()) {
-            printf("ERROR: Popping from empty buffer\n");
-            return m_data.front();
-        }
-        m_element_count--;
-        auto val = m_data.front();
-        m_data.pop();
-        return val;
-    }
-
-
-};
-
-template <typename T>
-class RingBuffer {
-    std::vector<T> m_data;
-public:
-
-    size_t m_head,m_tail;
-    bool m_full;
-    const size_t m_max_element_count;
-
-    RingBuffer(size_t max_element_count)
-        : m_max_element_count(max_element_count),
-        m_head(0),
-        m_tail(0),
-        m_full(false){
-        m_data.resize(m_max_element_count);
-    };
-
-    bool empty() {return m_head == m_tail && !m_full;}
-    bool full() {return m_full;}
-    int available() {
-        auto delta = m_tail - m_head;
-        if (delta < 0) return delta  + m_max_element_count;
-        return delta;
-    }
-    void push(T entry) {
-        if (full()) {
-            printf("ERROR: Pushing to full buffer\n");
-            return;
-        }
-        m_data[m_tail] = (entry);
-        m_tail = (m_tail + 1)%m_max_element_count;
-    }
-    int getIndex() {
-        return m_tail;
-    }
-
-    T& operator[](int index) {
-        return m_data[index];
-    }
-
-    T pop() {
-        if (empty()) {
-            printf("ERROR: Popping from empty buffer\n");
-            return m_data[0];
-        }
-        auto val = m_data[m_head];
-        m_head = (m_head + 1)%m_max_element_count;
-        return val;
-    }
-
-    T read(int index) {
-        return m_data[index];
-    }
-
 };
 
 
@@ -160,7 +60,150 @@ public:
             }
         }
     }
+
+    void Print(FILE *out = stdout) {
+        fprintf(out,"%llx,%d,%d,%d,%d,%d,%d,%llu,%d\n",pc,optype,dst,src1,src2,src1_meta,src2_meta,timestamp,valid);
+    }
+
+    void Print_Header(FILE *out = stdout) {
+        fprintf(out,"pc,optype,dst,src1,src2,src1_meta,src2_meta,timestamp,valid\n");
+    }
 };
+
+class Buffer {
+    std::queue<Instruction> m_data;
+public:
+
+    size_t m_element_count;
+    const size_t m_max_element_count;
+    Buffer(size_t max_element_count)
+        : m_max_element_count(max_element_count),
+        m_element_count(0) {};
+
+    Buffer& operator=(Buffer&& other) noexcept {
+        if (this != &other) {
+            if (m_max_element_count != other.m_max_element_count) {
+                printf("ERROR: Move-assign between Buffers of different max sizes\n");
+                return *this;
+            }
+            m_data = std::move(other.m_data);
+            m_element_count = other.m_element_count;
+            other.m_element_count = 0;
+        }
+        return *this;
+    }
+
+    [[nodiscard]] bool empty() const {return m_data.empty();}
+    [[nodiscard]] bool full() const {return m_element_count == m_max_element_count;}
+    [[nodiscard]] int available() const {return m_max_element_count-m_element_count;}
+    void push(Instruction entry) {
+        if (full()) {
+            printf("ERROR: Pushing to full buffer\n");
+            return;
+        }
+        m_element_count++;
+        m_data.push(entry);
+    }
+    Instruction pop() {
+        if (empty()) {
+            printf("ERROR: Popping from empty buffer\n");
+            return m_data.front();
+        }
+        m_element_count--;
+        auto val = m_data.front();
+        m_data.pop();
+        return val;
+    }
+
+    FILE *m_log_file;
+    void StartLog(char *path) {
+        m_log_file = fopen(path,"w");
+        m_data.front().Print_Header(m_log_file);
+
+    }
+
+    void EndLog() {
+        fclose(m_log_file);
+    }
+
+    void Log() {
+        std::queue<Instruction> temp = m_data;
+        while (!temp.empty()) {
+            temp.front().Print(m_log_file);
+            temp.pop();
+        }
+    }
+
+    void Print(FILE *out = stdout) {
+        fprintf(out,"%llu/%llu instructions\n",m_element_count,m_max_element_count);
+        m_data.front().Print_Header(out);
+        std::queue<Instruction> temp = m_data;
+        while (!temp.empty()) {
+            temp.front().Print(out);
+            temp.pop();
+        }
+    }
+
+
+};
+
+template <typename T>
+class RingBuffer {
+    std::vector<T> m_data;
+public:
+
+    size_t m_head,m_tail;
+    bool m_full;
+    const size_t m_max_element_count;
+
+    RingBuffer(size_t max_element_count)
+        : m_max_element_count(max_element_count),
+        m_head(0),
+        m_tail(0),
+        m_full(false){
+        m_data.resize(m_max_element_count);
+    };
+
+    bool empty() {return m_head == m_tail && !m_full;}
+    bool full() {return m_full;}
+    int available() {
+        auto delta = m_tail - m_head;
+        if (delta < 0) return delta  + m_max_element_count;
+        return m_max_element_count - delta;
+    }
+    void push(T entry) {
+        if (full()) {
+            printf("ERROR: Pushing to full buffer\n");
+            return;
+        }
+        m_data[m_tail] = (entry);
+        m_tail = (m_tail + 1)%m_max_element_count;
+    }
+    int getIndex() {
+        return m_tail;
+    }
+
+    T& operator[](int index) {
+        return m_data[index];
+    }
+
+    T pop() {
+        if (empty()) {
+            printf("ERROR: Popping from empty buffer\n");
+            return m_data[0];
+        }
+        auto val = m_data[m_head];
+        m_head = (m_head + 1)%m_max_element_count;
+        return val;
+    }
+
+    T read(int index) {
+        return m_data[index];
+    }
+
+};
+
+
 
 
 
@@ -275,9 +318,9 @@ public:
 class ReorderBuffer {
     std::vector<ROBEntry> m_rob;
     size_t m_max_element_count, m_element_count;
-    size_t head;
+    size_t m_head,m_tail;
 public:
-    ReorderBuffer(int size) : m_max_element_count(size), m_element_count(0), head(0){
+    ReorderBuffer(int size) : m_max_element_count(size), m_element_count(0), m_head(0), m_tail(0){
         m_rob.resize(size);
     }
 
@@ -285,16 +328,22 @@ public:
         return m_rob[index];
     }
 
-    void push(ROBEntry entry) {
+    size_t push(ROBEntry entry) {
         m_element_count++;
-        for (auto &i:m_rob) {
-            if (!i.valid) {
-                i = entry;
-                return;
-            }
+        m_rob[m_tail] = entry;
+        m_tail++;
+        return m_tail-1;
+    }
+
+    ROBEntry retire() {
+        if (m_rob[m_head].ready == 1) {
+            auto val = m_rob[m_head];
+            m_rob[m_head].valid = 0;
+            m_head++;
+            return val;
+        }else {
+            return{0,false,false,false,false,0};
         }
-        printf("ERROR: Failed to insert issue into ROB \n");
-        m_element_count--;
     }
 
     bool full() {
@@ -305,6 +354,13 @@ public:
         return m_max_element_count - m_element_count;
     }
 
+    void Print(FILE *out = stdout) {
+        m_rob[0].Print_Header(out);
+        for (int i = m_head; i!=m_tail;i = (i + 1)%m_max_element_count) {
+            m_rob[i].Print(out);
+        }
+    }
+
 
 };
 
@@ -313,13 +369,13 @@ class Simulator {
     FILE *m_trace_file;
     uint64_t m_instruction_count;
 
-    RingBuffer<ROBEntry> m_rob;
+    ReorderBuffer m_rob;
     IssueQueue m_iq;
 
     bool m_done;
 
     ExecuteList m_execute_list;
-    Buffer<Instruction> m_pipeline_de,m_pipeline_rn,m_pipeline_rr, m_pipeline_di, m_pipeline_wb;
+    Buffer m_pipeline_de,m_pipeline_rn,m_pipeline_rr, m_pipeline_di, m_pipeline_wb;
     std::array<int,ARCHITECTURAL_REGISTER_COUNT> m_rmt, m_arf;
 public:
     Simulator(int rob_size, int iq_size, int width, char* tracefile)

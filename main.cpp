@@ -14,6 +14,5 @@ int main(int argc, char **argv) {
     Simulator simulator(rob_size,iq_size,width,tracefile);
     simulator.Run();
 
-    std::cout << "Hello, World!" << std::endl;
     return 0;
 }
