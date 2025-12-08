@@ -1,0 +1,365 @@
+//
+// Created by Aweso on 11/29/2025.
+//
+
+#ifndef ECE463_PROJ3_SIMULATOR_H
+#define ECE463_PROJ3_SIMULATOR_H
+#include <array>
+#include <cstdint>
+#include <cstdio>
+#include <vector>
+#include <queue>
+#define ARCHITECTURAL_REGISTER_COUNT 67
+
+
+struct ROBEntry {
+    int dst;
+    bool valid, ready,exec, miss;
+    uint64_t pc;
+};
+
+
+
+template <typename T>
+class Buffer {
+    std::queue<T> m_data;
+public:
+
+    size_t m_element_count;
+    const size_t m_max_element_count;
+    Buffer(size_t max_element_count)
+        : m_max_element_count(max_element_count),
+        m_element_count(0) {};
+
+    Buffer& operator=(Buffer&& other) noexcept {
+        if (this != &other) {
+            if (m_max_element_count != other.m_max_element_count) {
+                printf("ERROR: Move-assign between Buffers of different max sizes\n");
+                return *this;
+            }
+            m_data = std::move(other.m_data);
+            m_element_count = other.m_element_count;
+            other.m_element_count = 0;
+        }
+        return *this;
+    }
+
+    bool empty() {return m_data.empty();}
+    bool full() {return m_element_count == m_max_element_count;}
+    int available() {return m_max_element_count-m_element_count;}
+    void push(T entry) {
+        if (full()) {
+            printf("ERROR: Pushing to full buffer\n");
+            return;
+        }
+        m_element_count++;
+        m_data.push(entry);
+    }
+    T pop() {
+        if (empty()) {
+            printf("ERROR: Popping from empty buffer\n");
+            return m_data.front();
+        }
+        m_element_count--;
+        auto val = m_data.front();
+        m_data.pop();
+        return val;
+    }
+
+
+};
+
+template <typename T>
+class RingBuffer {
+    std::vector<T> m_data;
+public:
+
+    size_t m_head,m_tail;
+    bool m_full;
+    const size_t m_max_element_count;
+
+    RingBuffer(size_t max_element_count)
+        : m_max_element_count(max_element_count),
+        m_head(0),
+        m_tail(0),
+        m_full(false){
+        m_data.resize(m_max_element_count);
+    };
+
+    bool empty() {return m_head == m_tail && !m_full;}
+    bool full() {return m_full;}
+    int available() {
+        auto delta = m_tail - m_head;
+        if (delta < 0) return delta  + m_max_element_count;
+        return delta;
+    }
+    void push(T entry) {
+        if (full()) {
+            printf("ERROR: Pushing to full buffer\n");
+            return;
+        }
+        m_data[m_tail] = (entry);
+        m_tail = (m_tail + 1)%m_max_element_count;
+    }
+    int getIndex() {
+        return m_tail;
+    }
+
+    T& operator[](int index) {
+        return m_data[index];
+    }
+
+    T pop() {
+        if (empty()) {
+            printf("ERROR: Popping from empty buffer\n");
+            return m_data[0];
+        }
+        auto val = m_data[m_head];
+        m_head = (m_head + 1)%m_max_element_count;
+        return val;
+    }
+
+    T read(int index) {
+        return m_data[index];
+    }
+
+};
+
+
+inline uint64_t g_instruction_timestamp = 0;
+class Instruction{
+public:
+    uint64_t pc;
+    int optype;
+    int dst, src1, src2;
+    bool src1_meta, src2_meta;
+    uint64_t timestamp;
+    bool valid;
+
+
+    Instruction(FILE *trace_file) : valid(true) {
+        fscanf(trace_file, "%lx %d %d %d %d", &pc, &optype, &dst, &src1, &src2);
+        timestamp = g_instruction_timestamp++;
+    }
+
+    Instruction() : valid(false) {
+    }
+
+    explicit operator bool() const {
+        return optype!=-1; //invalid optype
+    }
+
+    int GetLatency() {
+        switch (optype) {
+            case 0: return 1;
+            case 1: return 2;
+            case 2: return 5;
+            default: {
+                printf("ERROR: Invalid optype: %uc\n",optype);
+                return -1;
+            }
+        }
+    }
+};
+
+
+
+
+
+struct ExecuteEntry {
+    int counter;
+    Instruction instr;
+};
+
+
+class ExecuteList {
+    std::vector<ExecuteEntry> m_instructions;
+    size_t m_max_element_count, m_element_count;
+public:
+    ExecuteList(int size) : m_max_element_count(size), m_element_count(0){
+        m_instructions.resize(size);
+    }
+
+    void push(Instruction instr) {
+        m_element_count++;
+        for (auto &i:m_instructions) {
+            if (!i.instr.valid) {
+                i = {0,instr};
+                i.instr.valid = false;
+                return;
+            }
+        }
+        printf("ERROR: Failed to insert issue into Execute List\n");
+        m_element_count--;
+    }
+
+    bool full() {
+        return m_max_element_count == m_element_count;
+    }
+
+    size_t available() {
+        return m_max_element_count - m_element_count;
+    }
+
+    void Increment() {
+        for (auto &exec : m_instructions) {
+            exec.counter++;
+            if (exec.counter >= exec.instr.GetLatency()) {
+                exec.instr.valid = true;
+            }
+        }
+    }
+
+    Instruction GetOldest() {
+        m_element_count--;
+        uint64_t oldest_timestamp = UINT64_MAX;
+        int oldest_index = 0;
+        for (int i = 0; i < m_instructions.size(); i++) {
+            if (i==0 || (m_instructions[i].instr.timestamp < oldest_timestamp && m_instructions[i].instr.valid)) {
+                oldest_timestamp = m_instructions[i].instr.timestamp;
+                oldest_index = i;
+            }
+        }
+        auto val = m_instructions[oldest_index].instr;
+        m_instructions[oldest_index].instr.valid = false;
+        return val;
+    }
+};
+
+class IssueQueue {
+    std::vector<Instruction> m_instructions;
+    size_t m_max_element_count, m_element_count;
+public:
+    IssueQueue(int iq_size) : m_max_element_count(iq_size), m_element_count(0){
+        m_instructions.resize(iq_size);
+    }
+
+    void push(Instruction instr) {
+        m_element_count++;
+        for (auto &i:m_instructions) {
+            if (!i.valid) {
+                i = instr;
+                return;
+            }
+        }
+        printf("ERROR: Failed to insert issue into Issue Queue\n");
+        m_element_count--;
+    }
+
+    bool full() {
+        return m_max_element_count == m_element_count;
+    }
+
+    size_t available() {
+        return m_max_element_count - m_element_count;
+    }
+
+    Instruction GetOldest() {
+        m_element_count--;
+        uint64_t oldest_timestamp = UINT64_MAX;
+        int oldest_index = 0;
+        for (int i = 0; i < m_instructions.size(); i++) {
+            if (i==0 || (m_instructions[i].timestamp < oldest_timestamp && m_instructions[i].valid)) {
+                oldest_timestamp = m_instructions[i].timestamp;
+                oldest_index = i;
+            }
+        }
+        auto val = m_instructions[oldest_index];
+        m_instructions[oldest_index].valid = false;
+        return val;
+    }
+};
+
+
+
+class ReorderBuffer {
+    std::vector<ROBEntry> m_rob;
+    size_t m_max_element_count, m_element_count;
+    size_t head;
+public:
+    ReorderBuffer(int size) : m_max_element_count(size), m_element_count(0), head(0){
+        m_rob.resize(size);
+    }
+
+    ROBEntry& operator[](int index) {
+        return m_rob[index];
+    }
+
+    void push(ROBEntry entry) {
+        m_element_count++;
+        for (auto &i:m_rob) {
+            if (!i.valid) {
+                i = entry;
+                return;
+            }
+        }
+        printf("ERROR: Failed to insert issue into ROB \n");
+        m_element_count--;
+    }
+
+    bool full() {
+        return m_max_element_count == m_element_count;
+    }
+
+    size_t available() {
+        return m_max_element_count - m_element_count;
+    }
+
+
+};
+
+class Simulator {
+    uint32_t m_rob_size, m_iq_size, m_width;
+    FILE *m_trace_file;
+    uint64_t m_instruction_count;
+
+    RingBuffer<ROBEntry> m_rob;
+    IssueQueue m_iq;
+
+    bool m_done;
+
+    ExecuteList m_execute_list;
+    Buffer<Instruction> m_pipeline_de,m_pipeline_rn,m_pipeline_rr, m_pipeline_di, m_pipeline_wb;
+    std::array<int,ARCHITECTURAL_REGISTER_COUNT> m_rmt, m_arf;
+public:
+    Simulator(int rob_size, int iq_size, int width, char* tracefile)
+        :   m_rob_size(rob_size),
+            m_iq_size(iq_size),
+            m_width(width),
+            m_pipeline_de(width),
+            m_pipeline_rn(width),
+            m_rob(rob_size),
+            m_pipeline_rr(width),
+            m_pipeline_di(width),
+            m_iq(iq_size),
+            m_execute_list(width * 5),
+            m_pipeline_wb(width),
+            m_done(false),
+            m_instruction_count(0) {
+        m_trace_file = fopen(tracefile, "r");
+        if (!m_trace_file) {
+            printf("ERROR: Failed to open tracefile\n");
+        }
+        for (auto &r : m_rmt) r = -1; //invalidate rmt
+    }
+
+
+    void Run();
+
+private:
+
+    void Retire();
+    void Writeback();
+    void Execute();
+    void Issue();
+    void Dispatch();
+    void RegRead();
+    void Rename();
+    void Decode();
+    void Fetch();
+    bool Advance_Cycle();
+
+};
+
+
+#endif //ECE463_PROJ3_SIMULATOR_H
