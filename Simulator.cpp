@@ -7,9 +7,9 @@
 #define DO_LOG_STAGE false
 #define LOG_STAGE if(DO_LOG_STAGE) printf
 
-#define DO_CYCLE true
+#define DO_CYCLE false
 
-#define DO_LOG_FILES true
+#define DO_LOG_FILES false
 
 
 void Simulator::Run() {
@@ -22,7 +22,7 @@ void Simulator::Run() {
         m_pipeline_wb.StartLog("debug/writeback.csv");
     }
     do {
-        printf("%d\n",i);
+        //printf("%d\n",i);
         if (DO_CYCLE) {
             if (i == 10)break;
             printf("%d\n",i);
@@ -64,7 +64,7 @@ void Simulator::Run() {
         Decode();
         Fetch();
 
-    }while(Advance_Cycle() && i < 100);
+    }while(Advance_Cycle());
     if (DO_LOG_FILES) {
         m_pipeline_di.EndLog();
         m_pipeline_rn.EndLog();
@@ -79,7 +79,10 @@ void Simulator::Retire() {
     int instructions_retired = 0;
     while (instructions_retired <= m_width) {
         auto retired = m_rob.retire();
-        if (retired.valid == 0) break;
+        if (!retired.valid) break;
+        auto instr = m_pipeline_rt.pop();
+        instr.rt_length = m_cycle_count - instr.rt_begin;
+        instr.Print_Timing();
     }
 
 
@@ -89,8 +92,12 @@ void Simulator::Retire() {
 
 void Simulator::Writeback() {
     LOG_STAGE("Writeback\n");
-    while (!m_pipeline_wb.empty()) {
+    while (!m_pipeline_wb.empty() && !m_pipeline_rt.full()) {
         auto instr = m_pipeline_wb.pop();
+        instr.wb_length = m_cycle_count - instr.wb_begin;
+        instr.rt_begin = m_cycle_count;
+        m_pipeline_rt.push(instr);
+
     }
 }
 
@@ -99,10 +106,13 @@ void Simulator::Execute() {
     LOG_STAGE("Execute\n");
     while (!m_pipeline_wb.full()) {
         auto exec = m_execute_list.GetOldest();
+        exec.wb_begin = m_cycle_count;
+        exec.ex_length = m_cycle_count - exec.ex_length;
         if (!exec.valid) {
             break;
         }
         m_pipeline_wb.push(exec);
+
         // wake up
     }
 }
@@ -113,6 +123,9 @@ void Simulator::Issue() {
     int instructions_issued = 0;
     while (!m_execute_list.full() && instructions_issued < m_width) {
         auto instr = m_iq.GetOldest();
+        instr.iq_length = m_cycle_count - instr.iq_begin;
+        instr.ex_begin = m_cycle_count;
+
         if (instr.valid) {
             m_execute_list.push(instr);
             instructions_issued++;
@@ -127,7 +140,10 @@ void Simulator::Dispatch() {
     LOG_STAGE("Dispatch\n");
     if (m_iq.available() <= m_pipeline_rr.m_element_count) {
         while (!m_pipeline_rr.empty()) {
-            m_iq.push(m_pipeline_rr.pop()); //ready = meta
+            auto instr = m_pipeline_di.pop();
+            instr.di_length = m_cycle_count - instr.di_begin;
+            instr.iq_begin = m_cycle_count;
+            m_iq.push(instr); //ready = meta
         }
     }
 }
@@ -138,6 +154,8 @@ void Simulator::RegRead() {
     if (!m_pipeline_di.full()) {
         while (!m_pipeline_rr.empty()) {
             auto instr = m_pipeline_rr.pop();
+            instr.rr_length = m_cycle_count - instr.rr_begin;
+            instr.di_begin = m_cycle_count;
             instr.src1_meta = instr.src1_meta ? true : m_rob[instr.src1].ready; // if arf, ready, else, read rob
             instr.src2_meta = instr.src2_meta ? true : m_rob[instr.src2].ready; // if arf, ready, else, read rob
             m_pipeline_di.push(instr);
@@ -156,7 +174,8 @@ void Simulator::Rename() {
     if (m_pipeline_rr.available() >= m_pipeline_rn.m_element_count && m_rob.available() >= m_pipeline_rn.m_element_count) {
         while (!m_pipeline_rn.empty()) {
             auto instr = m_pipeline_rn.pop();
-
+            instr.rn_length = m_cycle_count - instr.rn_begin;
+            instr.rr_begin = m_cycle_count;
             if (m_rmt[instr.src1] >= 0) {
                 instr.src1 = m_rmt[instr.src1];
                 instr.src1_meta = false;
@@ -190,7 +209,13 @@ void Simulator::Rename() {
 void Simulator::Decode() {
     LOG_STAGE("Decode\n");
     if (m_pipeline_rn.empty()) {
-        m_pipeline_rn = std::move(m_pipeline_de);
+        while (!m_pipeline_de.empty()) {
+            auto instr = m_pipeline_de.pop();
+            instr.de_length = m_cycle_count - instr.de_begin;
+            instr.rn_begin = m_cycle_count;
+            m_pipeline_rn.push(instr);
+        }
+
     }
 }
 
@@ -198,8 +223,14 @@ void Simulator::Decode() {
 void Simulator::Fetch() {
     LOG_STAGE("Fetch\n");
     if (m_pipeline_de.empty() && !feof(m_trace_file)) {
-        while (!m_pipeline_de.full() && !feof(m_trace_file))
-            m_pipeline_de.push(Instruction(m_trace_file));
+        while (!m_pipeline_de.full() && !feof(m_trace_file)) {
+            auto instr = Instruction(m_trace_file);
+            instr.fe_begin = m_cycle_count-1;
+            instr.fe_length = 1;
+            instr.de_begin = m_cycle_count;
+            m_pipeline_de.push(instr);
+        }
+
     }
     if (feof(m_trace_file)) {
         fclose(m_trace_file);
@@ -210,6 +241,7 @@ void Simulator::Fetch() {
 
 bool Simulator::Advance_Cycle() {
     m_execute_list.Increment();
+    m_cycle_count++;
     return !m_done;
 }
 

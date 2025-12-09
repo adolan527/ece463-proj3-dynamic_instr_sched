@@ -26,20 +26,41 @@ struct ROBEntry {
 };
 
 
-inline uint64_t g_instruction_timestamp = 0;
+inline uint64_t g_trace_line = 0;
 class Instruction{
 public:
     uint64_t pc;
     int optype;
     int dst, src1, src2;
     bool src1_meta, src2_meta;
-    uint64_t timestamp;
+    uint64_t trace_line;
     bool valid;
 
+    uint32_t fe_begin, fe_length;
+    uint32_t de_begin, de_length;
+    uint32_t rn_begin, rn_length;
+    uint32_t rr_begin, rr_length;
+    uint32_t di_begin, di_length;
+    uint32_t iq_begin, iq_length;
+    uint32_t ex_begin, ex_length;
+    uint32_t wb_begin, wb_length;
+    uint32_t rt_begin, rt_length;
 
-    Instruction(FILE *trace_file) : valid(true) {
+
+
+    Instruction(FILE *trace_file) : valid(true),
+    fe_begin(0), fe_length(0),
+de_begin(0), de_length(0),
+rn_begin(0), rn_length(0),
+rr_begin(0), rr_length(0),
+di_begin(0), di_length(0),
+iq_begin(0), iq_length(0),
+ex_begin(0), ex_length(0),
+wb_begin(0), wb_length(0),
+rt_begin(0), rt_length(0)
+        {
         fscanf(trace_file, "%lx %d %d %d %d", &pc, &optype, &dst, &src1, &src2);
-        timestamp = g_instruction_timestamp++;
+        trace_line = g_trace_line++;
     }
 
     Instruction() : valid(false) {
@@ -62,12 +83,27 @@ public:
     }
 
     void Print(FILE *out = stdout) {
-        fprintf(out,"%llx,%d,%d,%d,%d,%d,%d,%llu,%d\n",pc,optype,dst,src1,src2,src1_meta,src2_meta,timestamp,valid);
+        fprintf(out,"%llx,%d,%d,%d,%d,%d,%d,%llu,%d\n",pc,optype,dst,src1,src2,src1_meta,src2_meta,trace_line,valid);
     }
 
     void Print_Header(FILE *out = stdout) {
         fprintf(out,"pc,optype,dst,src1,src2,src1_meta,src2_meta,timestamp,valid\n");
     }
+
+    void Print_Timing() {
+        printf("%llu fu{%d} src{%d,%d} dst{%d} FE{%d,%d} DE{%d,%d} RN{%d,%d} RR{%d,%d} DI{%d,%d} IS{%d,%d} EX{%d,%d} WB{%d,%d} RT{%d,%d}\n",
+        trace_line, optype, src1, src2,
+        fe_begin, fe_length,
+de_begin, de_length,
+rn_begin, rn_length,
+rr_begin, rr_length,
+di_begin, di_length,
+iq_begin, iq_length,
+ex_begin, ex_length,
+wb_begin, wb_length,
+rt_begin, rt_length);
+    }
+
 };
 
 class Buffer {
@@ -258,8 +294,8 @@ public:
         uint64_t oldest_timestamp = UINT64_MAX;
         int oldest_index = 0;
         for (int i = 0; i < m_instructions.size(); i++) {
-            if (i==0 || (m_instructions[i].instr.timestamp < oldest_timestamp && m_instructions[i].instr.valid)) {
-                oldest_timestamp = m_instructions[i].instr.timestamp;
+            if (i==0 || (m_instructions[i].instr.trace_line < oldest_timestamp && m_instructions[i].instr.valid)) {
+                oldest_timestamp = m_instructions[i].instr.trace_line;
                 oldest_index = i;
             }
         }
@@ -302,8 +338,8 @@ public:
         uint64_t oldest_timestamp = UINT64_MAX;
         int oldest_index = 0;
         for (int i = 0; i < m_instructions.size(); i++) {
-            if (i==0 || (m_instructions[i].timestamp < oldest_timestamp && m_instructions[i].valid)) {
-                oldest_timestamp = m_instructions[i].timestamp;
+            if (i==0 || (m_instructions[i].trace_line < oldest_timestamp && m_instructions[i].valid)) {
+                oldest_timestamp = m_instructions[i].trace_line;
                 oldest_index = i;
             }
         }
@@ -367,7 +403,7 @@ public:
 class Simulator {
     uint32_t m_rob_size, m_iq_size, m_width;
     FILE *m_trace_file;
-    uint64_t m_instruction_count;
+    uint64_t m_cycle_count;
 
     ReorderBuffer m_rob;
     IssueQueue m_iq;
@@ -375,7 +411,7 @@ class Simulator {
     bool m_done;
 
     ExecuteList m_execute_list;
-    Buffer m_pipeline_de,m_pipeline_rn,m_pipeline_rr, m_pipeline_di, m_pipeline_wb;
+    Buffer m_pipeline_de,m_pipeline_rn,m_pipeline_rr, m_pipeline_di, m_pipeline_wb, m_pipeline_rt;
     std::array<int,ARCHITECTURAL_REGISTER_COUNT> m_rmt, m_arf;
 public:
     Simulator(int rob_size, int iq_size, int width, char* tracefile)
@@ -391,7 +427,8 @@ public:
             m_execute_list(width * 5),
             m_pipeline_wb(width),
             m_done(false),
-            m_instruction_count(0) {
+            m_cycle_count(0),
+    m_pipeline_rt(width){
         m_trace_file = fopen(tracefile, "r");
         if (!m_trace_file) {
             printf("ERROR: Failed to open tracefile\n");
