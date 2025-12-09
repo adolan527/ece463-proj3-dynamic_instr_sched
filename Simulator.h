@@ -107,7 +107,7 @@ rt_begin, rt_length);
 };
 
 class Buffer {
-    std::queue<Instruction> m_data;
+    std::queue<Instruction*> m_data;
 public:
 
     size_t m_element_count;
@@ -132,7 +132,7 @@ public:
     [[nodiscard]] bool empty() const {return m_data.empty();}
     [[nodiscard]] bool full() const {return m_element_count == m_max_element_count;}
     [[nodiscard]] int available() const {return m_max_element_count-m_element_count;}
-    void push(Instruction entry) {
+    void push(Instruction* entry) {
         if (full()) {
             printf("ERROR: Pushing to full buffer\n");
             return;
@@ -140,7 +140,7 @@ public:
         m_element_count++;
         m_data.push(entry);
     }
-    Instruction pop() {
+    Instruction* pop() {
         if (empty()) {
             printf("ERROR: Popping from empty buffer\n");
             return m_data.front();
@@ -154,7 +154,7 @@ public:
     FILE *m_log_file;
     void StartLog(char *path) {
         m_log_file = fopen(path,"w");
-        m_data.front().Print_Header(m_log_file);
+        m_data.front()->Print_Header(m_log_file);
 
     }
 
@@ -163,19 +163,19 @@ public:
     }
 
     void Log() {
-        std::queue<Instruction> temp = m_data;
+        std::queue<Instruction*> temp = m_data;
         while (!temp.empty()) {
-            temp.front().Print(m_log_file);
+            temp.front()->Print(m_log_file);
             temp.pop();
         }
     }
 
     void Print(FILE *out = stdout) {
         fprintf(out,"%llu/%llu instructions\n",m_element_count,m_max_element_count);
-        m_data.front().Print_Header(out);
-        std::queue<Instruction> temp = m_data;
+        m_data.front()->Print_Header(out);
+        std::queue<Instruction*> temp = m_data;
         while (!temp.empty()) {
-            temp.front().Print(out);
+            temp.front()->Print(out);
             temp.pop();
         }
     }
@@ -247,7 +247,7 @@ public:
 
 struct ExecuteEntry {
     int counter;
-    Instruction instr;
+    Instruction* instr;
 };
 
 
@@ -259,12 +259,12 @@ public:
         m_instructions.resize(size);
     }
 
-    void push(Instruction instr) {
+    void push(Instruction* instr) {
         m_element_count++;
         for (auto &i:m_instructions) {
-            if (!i.instr.valid) {
+            if (!i.instr->valid) {
                 i = {0,instr};
-                i.instr.valid = false;
+                i.instr->valid = false;
                 return;
             }
         }
@@ -276,47 +276,55 @@ public:
         return m_max_element_count == m_element_count;
     }
 
+    bool empty() {
+        return m_element_count == 0;
+    }
+
     size_t available() {
         return m_max_element_count - m_element_count;
     }
 
     void Increment() {
         for (auto &exec : m_instructions) {
-            exec.counter++;
-            if (exec.counter >= exec.instr.GetLatency()) {
-                exec.instr.valid = true;
+            if (exec.instr) {
+                exec.counter++;
+                if (exec.counter >= exec.instr->GetLatency()) {
+                    exec.instr->valid = true;
+                }
             }
+
         }
     }
 
-    Instruction GetOldest() {
-        m_element_count--;
+    Instruction* GetOldest() {
+
         uint64_t oldest_timestamp = UINT64_MAX;
         int oldest_index = 0;
         for (int i = 0; i < m_instructions.size(); i++) {
-            if (i==0 || (m_instructions[i].instr.trace_line < oldest_timestamp && m_instructions[i].instr.valid)) {
-                oldest_timestamp = m_instructions[i].instr.trace_line;
+            if (i==0 || (m_instructions[i].instr->trace_line < oldest_timestamp && m_instructions[i].instr->valid)) {
+                oldest_timestamp = m_instructions[i].instr->trace_line;
                 oldest_index = i;
             }
         }
         auto val = m_instructions[oldest_index].instr;
-        m_instructions[oldest_index].instr.valid = false;
+        m_instructions[oldest_index].instr->valid = false;
+        m_element_count--;
         return val;
     }
 };
 
 class IssueQueue {
-    std::vector<Instruction> m_instructions;
+    std::vector<Instruction*> m_instructions;
     size_t m_max_element_count, m_element_count;
 public:
     IssueQueue(int iq_size) : m_max_element_count(iq_size), m_element_count(0){
         m_instructions.resize(iq_size);
     }
 
-    void push(Instruction instr) {
+    void push(Instruction* instr) {
         m_element_count++;
         for (auto &i:m_instructions) {
-            if (!i.valid) {
+            if (!i || !i->valid) {
                 i = instr;
                 return;
             }
@@ -329,22 +337,25 @@ public:
         return m_max_element_count == m_element_count;
     }
 
+    bool empty() {
+        return m_element_count == 0;
+    }
     size_t available() {
         return m_max_element_count - m_element_count;
     }
 
-    Instruction GetOldest() {
+    Instruction* GetOldest() {
         m_element_count--;
         uint64_t oldest_timestamp = UINT64_MAX;
         int oldest_index = 0;
         for (int i = 0; i < m_instructions.size(); i++) {
-            if (i==0 || (m_instructions[i].trace_line < oldest_timestamp && m_instructions[i].valid)) {
-                oldest_timestamp = m_instructions[i].trace_line;
+            if (i==0 || (m_instructions[i] && m_instructions[i]->trace_line < oldest_timestamp && m_instructions[i]->valid)) {
+                oldest_timestamp = m_instructions[i]->trace_line;
                 oldest_index = i;
             }
         }
         auto val = m_instructions[oldest_index];
-        m_instructions[oldest_index].valid = false;
+        m_instructions[oldest_index]->valid = false;
         return val;
     }
 };
